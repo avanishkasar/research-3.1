@@ -304,6 +304,16 @@ def _step_card(icon: str, title: str, detail: str, elapsed: float) -> str:
             f'<div class="step-time">{detail} · ⏱ {elapsed:.2f}s</div></div>')
 
 
+def _score_band(mape: float) -> str:
+    if mape < 10:
+        return "Excellent"
+    if mape < 20:
+        return "Good"
+    if mape < 30:
+        return "Acceptable"
+    return "Needs Improvement"
+
+
 # ═════════════════════════════════════════════════════════════════════════════
 #  MAIN
 # ═════════════════════════════════════════════════════════════════════════════
@@ -374,6 +384,30 @@ def main() -> None:
     with st.expander("👀  Preview raw data", expanded=False):
         st.dataframe(raw_df.head(20), use_container_width=True)
 
+    # ── User scenario inputs ─────────────────────────────────────────────
+    st.markdown("#### 🎛️  Analysis Scenario")
+    sc1, sc2 = st.columns(2)
+    if "category" in raw_df.columns:
+        top_categories = (
+            raw_df["category"].astype(str).str.strip().replace("", np.nan).dropna().value_counts().head(30).index.tolist()
+        )
+        category_options = ["All Categories"] + top_categories
+    else:
+        category_options = ["All Categories"]
+
+    with sc1:
+        selected_category = st.selectbox("Choose product category", options=category_options, index=0)
+
+    with sc2:
+        use_custom_price = st.toggle("Use custom launch price", value=False)
+        custom_launch_price = st.number_input(
+            "Custom launch price (INR)",
+            min_value=1.0,
+            value=1999.0,
+            step=100.0,
+            disabled=not use_custom_price,
+        )
+
     # ── RUN ANALYSIS BUTTON ──────────────────────────────────────────────
     st.markdown('<hr class="section-divider">', unsafe_allow_html=True)
     run_col1, run_col2, run_col3 = st.columns([1, 2, 1])
@@ -409,10 +443,16 @@ def main() -> None:
         progress.progress(5, text="Step 1/10 · Cleaning data …")
         t0 = time.perf_counter()
         df_clean = clean_dataframe(raw_df)
+        if selected_category != "All Categories" and "category" in df_clean.columns:
+            df_clean = df_clean[df_clean["category"].astype(str).str.contains(selected_category, case=False, na=False)].copy()
+            if df_clean.empty:
+                st.error("No rows left after applying selected category filter. Please choose another category.")
+                st.stop()
         elapsed = time.perf_counter() - t0
+        cat_note = "all categories" if selected_category == "All Categories" else f"category: {selected_category}"
         step_logs.append(_step_card(
             "🧹", "Data Cleaning",
-            f"{len(raw_df):,} → {len(df_clean):,} valid products  ·  removed ₹ / commas / NaN",
+            f"{len(raw_df):,} → {len(df_clean):,} valid products  ·  {cat_note}",
             elapsed,
         ))
 
@@ -518,7 +558,8 @@ def main() -> None:
         # ── step 10 ─ price optimisation ─────────────────────────────────
         progress.progress(95, text="Step 10/10 · Optimising price …")
         t0 = time.perf_counter()
-        last_price = float(feat_df["Weekly_Price"].iloc[-1])
+        baseline_price = float(feat_df["Weekly_Price"].iloc[-1])
+        last_price = float(custom_launch_price) if use_custom_price else baseline_price
         price_df = optimise_price(xgb_model, feat_df.iloc[-1].copy(), feature_cols, last_price)
         elapsed = time.perf_counter() - t0
         best_pi = int(price_df["Revenue"].idxmax())
@@ -526,7 +567,7 @@ def main() -> None:
         opt_demand = price_df.loc[best_pi, "Predicted_Demand"]
         opt_rev = price_df.loc[best_pi, "Revenue"]
         step_logs.append(_step_card("💰", "Price Optimisation",
-                                    f"Optimal ₹{opt_price:,.0f} · Revenue ₹{opt_rev:,.0f}",
+                        f"Base ₹{last_price:,.0f} → Optimal ₹{opt_price:,.0f} · Revenue ₹{opt_rev:,.0f}",
                                     elapsed))
 
         total_elapsed = time.perf_counter() - total_t0
@@ -536,6 +577,8 @@ def main() -> None:
 
         # ── save into session state so results persist across reruns ──
         best_fi = int(xgb_future["XGBoost_Forecast"].idxmax())
+        arima_nrmse = (arima_rmse / y_test.mean() * 100) if y_test.mean() != 0 else np.nan
+        xgb_nrmse = (xgb_rmse / y_test.mean() * 100) if y_test.mean() != 0 else np.nan
         st.session_state["results"] = {
             "step_logs": step_logs,
             "total_elapsed": total_elapsed,
@@ -546,6 +589,8 @@ def main() -> None:
             "feature_cols": feature_cols,
             "arima_rmse": arima_rmse, "arima_mape": arima_mape,
             "xgb_rmse": xgb_rmse, "xgb_mape": xgb_mape,
+            "arima_nrmse": arima_nrmse,
+            "xgb_nrmse": xgb_nrmse,
             "arima_test_preds": arima_preds,
             "xgb_test_preds": xgb_preds,
             "test_dates": test_part["Date"].values,
@@ -559,6 +604,11 @@ def main() -> None:
             "best_launch": xgb_future.loc[best_fi, "Date"],
             "best_units": xgb_future.loc[best_fi, "XGBoost_Forecast"],
             "forecast_horizon": forecast_horizon,
+            "selected_category": selected_category,
+            "analysis_start": feat_df["Date"].min(),
+            "analysis_end": feat_df["Date"].max(),
+            "forecast_end": xgb_future["Date"].max(),
+            "base_price_used": last_price,
         }
 
     # ═════════════════════════════════════════════════════════════════════
@@ -597,6 +647,26 @@ def main() -> None:
     mod_c2.metric("ARIMA MAPE", f"{R['arima_mape']:.2f}%")
     mod_c3.metric("XGBoost RMSE", f"{R['xgb_rmse']:,.1f}", delta=f"{rmse_improve:.1f}% lower", delta_color="inverse")
     mod_c4.metric("XGBoost MAPE", f"{R['xgb_mape']:.2f}%", delta=f"{mape_improve:.1f}% lower", delta_color="inverse")
+
+    st.markdown("#### ✅ How to read these numbers")
+    c1, c2, c3 = st.columns(3)
+    c1.metric("ARIMA Accuracy Band", _score_band(R["arima_mape"]))
+    c2.metric("XGBoost Accuracy Band", _score_band(R["xgb_mape"]))
+    c3.metric("Best Model", "XGBoost" if R["xgb_mape"] <= R["arima_mape"] else "ARIMA")
+
+    st.info(
+        f"Lower RMSE and lower MAPE are better. In business forecasting, MAPE below 10% is usually considered excellent. "
+        f"Current run: ARIMA MAPE {R['arima_mape']:.2f}% vs XGBoost MAPE {R['xgb_mape']:.2f}%."
+    )
+
+    with st.expander("🕒 How best launch timing is calculated", expanded=True):
+        st.markdown(
+            f"- Historical window used: **{pd.to_datetime(R['analysis_start']).strftime('%d %b %Y')}** to **{pd.to_datetime(R['analysis_end']).strftime('%d %b %Y')}**.\n"
+            f"- Future window evaluated: next **{R['forecast_horizon']} weeks** ending on **{pd.to_datetime(R['forecast_end']).strftime('%d %b %Y')}**.\n"
+            f"- For each future week, the model predicts demand.\n"
+            f"- The app picks the week with the **highest predicted units** as best launch timing.\n"
+            f"- Selected scope: **{R['selected_category']}**; baseline price used for optimization: **₹{R['base_price_used']:,.0f}**."
+        )
 
     # ── Tabs: charts ─────────────────────────────────────────────────────
     st.markdown('<hr class="section-divider">', unsafe_allow_html=True)
@@ -749,7 +819,8 @@ def main() -> None:
             "Best launch week", "Optimal price",
             "Forecasted weekly demand", "Estimated weekly revenue",
             "ARIMA RMSE / MAPE", "XGBoost RMSE / MAPE",
-            "Google Trends keyword", "Pipeline time",
+            "ARIMA NRMSE / XGBoost NRMSE", "Google Trends keyword",
+            "Category scope", "Timeline used", "Pipeline time",
         ],
         "Value": [
             R["best_launch"].strftime("%d %B %Y"),
@@ -758,7 +829,10 @@ def main() -> None:
             f"₹{R['opt_price'] * R['best_units']:,.0f}",
             f"{R['arima_rmse']:,.1f} / {R['arima_mape']:.2f}%",
             f"{R['xgb_rmse']:,.1f} / {R['xgb_mape']:.2f}%",
+            f"{R['arima_nrmse']:.2f}% / {R['xgb_nrmse']:.2f}%",
             f"{kw} (geo=IN)",
+            R["selected_category"],
+            f"{pd.to_datetime(R['analysis_start']).strftime('%d %b %Y')} to {pd.to_datetime(R['analysis_end']).strftime('%d %b %Y')}",
             f"{R['total_elapsed']:.2f}s",
         ],
     }
