@@ -1,0 +1,16 @@
+node_modules
+npm-debug.log*
+.npm
+.eslintcache
+*.pem
+.next
+.git
+.gitignore
+README.md
+.env.local
+.env.*.local
+.DS_Store
+*.pem
+coverage
+.vscode
+yarn.lock
