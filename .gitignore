@@ -6,3 +6,7 @@ __pycache__/
 dist/
 build/
 .env
+node_modules/
+.next/
+frontend-react/node_modules/
+frontend-react/.next/

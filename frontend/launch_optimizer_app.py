@@ -314,6 +314,11 @@ def _score_band(mape: float) -> str:
     return "Needs Improvement"
 
 
+def _terminal_log(stage: str, detail: str) -> None:
+    ts = datetime.now().strftime("%H:%M:%S")
+    print(f"[{ts}] {stage}: {detail}", flush=True)
+
+
 # ═════════════════════════════════════════════════════════════════════════════
 #  MAIN
 # ═════════════════════════════════════════════════════════════════════════════
@@ -438,8 +443,18 @@ def main() -> None:
 
         progress = st.progress(0, text="Starting analysis pipeline …")
         status_box = st.empty()
+        _terminal_log("PIPELINE", "Run Analysis clicked")
+        _terminal_log(
+            "INPUT",
+            (
+                f"rows={len(raw_df):,}, cols={len(raw_df.columns)}, "
+                f"category={selected_category}, keyword={keyword}, horizon={forecast_horizon}, "
+                f"custom_price={'ON' if use_custom_price else 'OFF'}"
+            ),
+        )
 
         # ── step 1 ─ clean ───────────────────────────────────────────────
+        _terminal_log("STEP 1/10", "Data cleaning started")
         progress.progress(5, text="Step 1/10 · Cleaning data …")
         t0 = time.perf_counter()
         df_clean = clean_dataframe(raw_df)
@@ -450,6 +465,7 @@ def main() -> None:
                 st.stop()
         elapsed = time.perf_counter() - t0
         cat_note = "all categories" if selected_category == "All Categories" else f"category: {selected_category}"
+        _terminal_log("STEP 1/10", f"Completed in {elapsed:.2f}s | valid_rows={len(df_clean):,} | {cat_note}")
         step_logs.append(_step_card(
             "🧹", "Data Cleaning",
             f"{len(raw_df):,} → {len(df_clean):,} valid products  ·  {cat_note}",
@@ -457,6 +473,7 @@ def main() -> None:
         ))
 
         # ── step 2 ─ time-series ─────────────────────────────────────────
+        _terminal_log("STEP 2/10", "Weekly time-series generation started")
         progress.progress(15, text="Step 2/10 · Generating weekly time-series …")
         t0 = time.perf_counter()
         has_date = "Date" in raw_df.columns or "date" in raw_df.columns
@@ -471,9 +488,14 @@ def main() -> None:
             ts_df = generate_weekly_series(df_clean, years=3)
             ts_note = f"{len(ts_df)} weeks synthesised ({ts_df['Date'].min().date()} → {ts_df['Date'].max().date()})"
         elapsed = time.perf_counter() - t0
+        _terminal_log(
+            "STEP 2/10",
+            f"Completed in {elapsed:.2f}s | rows={len(ts_df):,} | range={ts_df['Date'].min().date()} to {ts_df['Date'].max().date()}",
+        )
         step_logs.append(_step_card("📅", "Time-Series Generation", ts_note, elapsed))
 
         # ── step 3 ─ google trends ───────────────────────────────────────
+        _terminal_log("STEP 3/10", "Google Trends fetch started")
         progress.progress(25, text="Step 3/10 · Fetching Google Trends (India) …")
         t0 = time.perf_counter()
         start_str = ts_df["Date"].min().strftime("%Y-%m-%d")
@@ -481,6 +503,7 @@ def main() -> None:
         trends_df = fetch_google_trends(keyword, start_str, end_str)
         src = "cache/live" if _trends_cache_path(keyword).exists() else "synthetic"
         elapsed = time.perf_counter() - t0
+        _terminal_log("STEP 3/10", f"Completed in {elapsed:.2f}s | trend_rows={len(trends_df):,} | source={src}")
         step_logs.append(_step_card(
             "📈", "Google Trends",
             f"\"{keyword}\" · {len(trends_df)} weeks · geo=IN · source: {src}",
@@ -488,23 +511,28 @@ def main() -> None:
         ))
 
         # ── step 4 ─ merge ───────────────────────────────────────────────
+        _terminal_log("STEP 4/10", "Sales + trends merge started")
         progress.progress(35, text="Step 4/10 · Merging datasets …")
         t0 = time.perf_counter()
         merged = merge_sales_trends(ts_df, trends_df, keyword)
         elapsed = time.perf_counter() - t0
+        _terminal_log("STEP 4/10", f"Completed in {elapsed:.2f}s | merged_shape={merged.shape}")
         step_logs.append(_step_card("🔗", "Merge Sales + Trends",
                                     f"{merged.shape[0]} rows × {merged.shape[1]} cols", elapsed))
 
         # ── step 5 ─ features ────────────────────────────────────────────
+        _terminal_log("STEP 5/10", "Feature engineering started")
         progress.progress(45, text="Step 5/10 · Engineering features …")
         t0 = time.perf_counter()
         feat_df = engineer_features(merged, keyword)
         elapsed = time.perf_counter() - t0
+        _terminal_log("STEP 5/10", f"Completed in {elapsed:.2f}s | feature_shape={feat_df.shape}")
         step_logs.append(_step_card("⚙️", "Feature Engineering",
                                     f"{feat_df.shape[1]} features (lags, rolling avg, momentum, price lag)",
                                     elapsed))
 
         # ── step 6 ─ train/test split ────────────────────────────────────
+        _terminal_log("STEP 6/10", "Train/test split started")
         progress.progress(50, text="Step 6/10 · Splitting train / test …")
         t0 = time.perf_counter()
         split = int(len(feat_df) * 0.8)
@@ -517,45 +545,68 @@ def main() -> None:
         X_train, y_train = train_part[feature_cols], train_part["Units_Sold"]
         X_test,  y_test  = test_part[feature_cols],  test_part["Units_Sold"]
         elapsed = time.perf_counter() - t0
+        _terminal_log(
+            "STEP 6/10",
+            f"Completed in {elapsed:.2f}s | train={len(train_part):,}, test={len(test_part):,}, features={len(feature_cols)}",
+        )
         step_logs.append(_step_card("✂️", "Train / Test Split",
                                     f"80 / 20 — train {len(train_part)}, test {len(test_part)} weeks",
                                     elapsed))
 
         # ── step 7 ─ ARIMA ───────────────────────────────────────────────
+        _terminal_log("STEP 7/10", "ARIMA baseline training started")
         progress.progress(60, text="Step 7/10 · Training ARIMA baseline …")
         t0 = time.perf_counter()
         arima_fit, arima_preds, arima_fitted = train_arima(y_train, len(y_test))
         arima_rmse = np.sqrt(mean_squared_error(y_test, arima_preds))
         arima_mape = _mape(y_test.values, arima_preds)
         elapsed = time.perf_counter() - t0
+        _terminal_log(
+            "STEP 7/10",
+            f"Completed in {elapsed:.2f}s | ARIMA RMSE={arima_rmse:,.2f}, MAPE={arima_mape:.2f}%",
+        )
         step_logs.append(_step_card("📉", "ARIMA(1,1,1) Baseline",
                                     f"RMSE {arima_rmse:,.1f} · MAPE {arima_mape:.2f}%",
                                     elapsed))
 
         # ── step 8 ─ XGBoost ─────────────────────────────────────────────
+        _terminal_log("STEP 8/10", "XGBoost training started")
         progress.progress(75, text="Step 8/10 · Training XGBoost + Trends …")
         t0 = time.perf_counter()
         xgb_model, xgb_preds = train_xgboost(X_train, y_train, X_test)
         xgb_rmse = np.sqrt(mean_squared_error(y_test, xgb_preds))
         xgb_mape = _mape(y_test.values, xgb_preds)
         elapsed = time.perf_counter() - t0
+        _terminal_log(
+            "STEP 8/10",
+            f"Completed in {elapsed:.2f}s | XGBoost RMSE={xgb_rmse:,.2f}, MAPE={xgb_mape:.2f}%",
+        )
         step_logs.append(_step_card("🤖", "XGBoost + Google Trends",
                                     f"RMSE {xgb_rmse:,.1f} · MAPE {xgb_mape:.2f}%",
                                     elapsed))
 
         # ── step 9 ─ forecast ────────────────────────────────────────────
+        _terminal_log("STEP 9/10", "Future forecasting started")
         progress.progress(85, text="Step 9/10 · Forecasting future demand …")
         t0 = time.perf_counter()
         xgb_future = forecast_future(xgb_model, feat_df, feature_cols, keyword, n=forecast_horizon)
         arima_future_vals = forecast_arima_future(feat_df["Units_Sold"], n=forecast_horizon)
         xgb_future["ARIMA_Forecast"] = arima_future_vals
         elapsed = time.perf_counter() - t0
+        _terminal_log(
+            "STEP 9/10",
+            (
+                f"Completed in {elapsed:.2f}s | weeks={forecast_horizon}, "
+                f"XGB min/max={xgb_future['XGBoost_Forecast'].min():,.0f}/{xgb_future['XGBoost_Forecast'].max():,.0f}"
+            ),
+        )
         step_logs.append(_step_card("🔮", f"Forecast ({forecast_horizon} weeks)",
                                     f"XGBoost range: {xgb_future['XGBoost_Forecast'].min():,.0f} – "
                                     f"{xgb_future['XGBoost_Forecast'].max():,.0f} units",
                                     elapsed))
 
         # ── step 10 ─ price optimisation ─────────────────────────────────
+        _terminal_log("STEP 10/10", "Price optimization started")
         progress.progress(95, text="Step 10/10 · Optimising price …")
         t0 = time.perf_counter()
         baseline_price = float(feat_df["Weekly_Price"].iloc[-1])
@@ -566,11 +617,19 @@ def main() -> None:
         opt_price = price_df.loc[best_pi, "Price"]
         opt_demand = price_df.loc[best_pi, "Predicted_Demand"]
         opt_rev = price_df.loc[best_pi, "Revenue"]
+        _terminal_log(
+            "STEP 10/10",
+            (
+                f"Completed in {elapsed:.2f}s | base_price={last_price:,.0f}, "
+                f"opt_price={opt_price:,.0f}, opt_demand={opt_demand:,.0f}, opt_revenue={opt_rev:,.0f}"
+            ),
+        )
         step_logs.append(_step_card("💰", "Price Optimisation",
                         f"Base ₹{last_price:,.0f} → Optimal ₹{opt_price:,.0f} · Revenue ₹{opt_rev:,.0f}",
                                     elapsed))
 
         total_elapsed = time.perf_counter() - total_t0
+        _terminal_log("PIPELINE", f"Completed in {total_elapsed:.2f}s")
         progress.progress(100, text=f"✅  Pipeline complete — {total_elapsed:.2f}s total")
         time.sleep(0.4)
         progress.empty()
