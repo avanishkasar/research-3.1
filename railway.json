@@ -5,7 +5,7 @@
     "dockerfile": "./Dockerfile"
   },
   "deploy": {
-    "startCommand": "cd frontend-react && npm run start",
+    "startCommand": "node server.js",
     "restartPolicyType": "on_failure",
     "restartPolicyMaxRetries": 5
   }

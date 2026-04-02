@@ -259,7 +259,7 @@ export default function Page() {
             <ShaderAnimation />
             <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
               <h1 className="text-center text-4xl font-semibold tracking-tight text-white md:text-6xl">
-                Launch Optimizer
+                Optezum
               </h1>
             </div>
           </motion.section>
@@ -272,14 +272,14 @@ export default function Page() {
             className="mx-auto flex w-full max-w-6xl flex-col gap-8 px-4 py-8 md:px-6 md:py-12"
           >
             {/* Header Section */}
-            <header className="text-center">
+            <header className="rounded-2xl border border-[#eadfce] bg-[#F8F1E7] px-4 py-6 text-center shadow-sm">
               <div className="h-12 md:h-14">
                 <GradientWaveText 
                   className="text-2xl md:text-3xl lg:text-4xl font-semibold"
                   speed={0.8}
                   customColors={["#0284c7", "#06b6d4", "#10b981", "#f59e0b", "#ef4444"]}
                 >
-                  Welcome to Forecast Studio
+                  Welcome to Optezum
                 </GradientWaveText>
               </div>
               <div className="mt-3 flex justify-center">

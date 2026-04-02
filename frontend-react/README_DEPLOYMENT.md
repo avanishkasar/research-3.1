@@ -1,4 +1,4 @@
-# Launch Optimizer - Frontend React
+# Optezum - Frontend React
 
 Reactive UI for demand forecasting and price optimization using ARIMA, SARIMA, and XGBoost models.
 

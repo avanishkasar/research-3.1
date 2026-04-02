@@ -2,8 +2,8 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Launch Optimizer UI",
-  description: "Frontend React UI components showcase"
+  title: "Optezum",
+  description: "Optezum - demand forecasting and price optimization"
 };
 
 export default function RootLayout({

@@ -13,7 +13,7 @@ export function FooterSection() {
           <a href={REPO_URL} target="_blank" rel="noreferrer" aria-label="GitHub repository" className="inline-flex">
             <GithubIcon className="mb-3 h-7 w-7" />
           </a>
-          <p className="text-sm text-muted-foreground">© {new Date().getFullYear()} Forecast Studio</p>
+          <p className="text-sm text-muted-foreground">© {new Date().getFullYear()} Optezum</p>
         </AnimatedContainer>
         <AnimatedContainer delay={0.15}>
           <h4 className="text-xs font-semibold uppercase text-muted-foreground">Product</h4>
