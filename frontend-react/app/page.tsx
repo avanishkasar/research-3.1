@@ -58,13 +58,153 @@ function parseCsvLine(line: string) {
 }
 
 function toNumber(value: string) {
-  const normalized = value.replace(/,/g, "").trim();
+  const normalized = value.replace(/[^0-9.-]/g, "").trim();
   const n = Number(normalized);
   return Number.isFinite(n) ? n : null;
 }
 
 function clamp(value: number, min: number, max: number) {
   return Math.min(max, Math.max(min, value));
+}
+
+function hashString(value: string) {
+  let hash = 0;
+  for (let i = 0; i < value.length; i += 1) {
+    hash = (hash << 5) - hash + value.charCodeAt(i);
+    hash |= 0;
+  }
+  return Math.abs(hash);
+}
+
+function normalizeText(value: string) {
+  return value.toLowerCase().replace(/[^a-z0-9\s]/g, " ").replace(/\s+/g, " ").trim();
+}
+
+function tokenize(value: string) {
+  return normalizeText(value).split(" ").filter((t) => t.length > 2);
+}
+
+function tokenizeFlexible(value: string) {
+  return value
+    .replace(/[|&_/-]/g, " ")
+    .replace(/([a-z])([A-Z])/g, "$1 $2")
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .split(" ")
+    .filter((token) => token.length > 2)
+    .flatMap((token) => {
+      const variants = new Set<string>([token]);
+      if (token.endsWith("ies") && token.length > 4) variants.add(`${token.slice(0, -3)}y`);
+      if (token.endsWith("es") && token.length > 4) variants.add(token.slice(0, -2));
+      if (token.endsWith("s") && token.length > 3) variants.add(token.slice(0, -1));
+      return Array.from(variants);
+    });
+}
+
+function toDateOrNull(value: string) {
+  const parsed = new Date(value);
+  return Number.isFinite(parsed.getTime()) ? parsed : null;
+}
+
+const CATEGORY_KEYWORD_EXAMPLES: Record<string, string[]> = {
+  electronics: ["earbuds india", "bluetooth speaker india", "smart tv india"],
+  wearables: ["smartwatch india", "fitness band india", "heart rate watch india"],
+  clothing: ["cotton tshirt india", "running shoes india", "winter jacket india"],
+  books: ["bestseller books india", "fiction books india", "study guide india"],
+  beauty: ["lipstick india", "skin care india", "hair dryer india"],
+  "home kitchen": ["air fryer india", "kitchen organizer india", "nonstick pan india"],
+};
+
+const KEYWORD_STOPWORDS = new Set([
+  "with",
+  "for",
+  "and",
+  "the",
+  "pack",
+  "meter",
+  "inch",
+  "black",
+  "white",
+  "grey",
+  "type",
+  "cable",
+  "usb",
+  "fast",
+  "charging",
+  "data",
+]);
+
+function getKeywordExamplesForCategory(category: string, rows: CsvRecord[], categoryColumn: string) {
+  if (!category) return [] as string[];
+
+  const normCategory = normalizeText(category);
+  const aliasTokens = normCategory.split(" ").filter(Boolean);
+  const builtIn = CATEGORY_KEYWORD_EXAMPLES[aliasTokens.join(" ")] ??
+    aliasTokens.flatMap((token) => CATEGORY_KEYWORD_EXAMPLES[token] ?? []);
+
+  const candidateProductCols = ["product_name", "product", "name", "about_product", "title"];
+  const productCol = candidateProductCols.find((col) => rows.length > 0 && col in rows[0]);
+
+  const dataDrivenExamples: string[] = [];
+  if (productCol && categoryColumn) {
+    const tokenCounts = new Map<string, number>();
+    rows
+      .filter((row) => normalizeText(row[categoryColumn] ?? "") === normCategory)
+      .slice(0, 300)
+      .forEach((row) => {
+        tokenize(row[productCol] ?? "").forEach((token) => {
+          if (token.length < 4 || KEYWORD_STOPWORDS.has(token)) return;
+          tokenCounts.set(token, (tokenCounts.get(token) ?? 0) + 1);
+        });
+      });
+
+    const topTokens = Array.from(tokenCounts.entries())
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 3)
+      .map(([token]) => `${token} india`);
+
+    dataDrivenExamples.push(...topTokens);
+  }
+
+  return Array.from(new Set([...dataDrivenExamples, ...builtIn])).slice(0, 4);
+}
+
+function isKeywordAlignedWithCategory(category: string, keyword: string, keywordExamples: string[] = []) {
+  const categoryTokens = tokenizeFlexible(category);
+  const keywordTokens = tokenizeFlexible(keyword);
+  const exampleTokens = keywordExamples.flatMap((example) => tokenizeFlexible(example));
+
+  if (keywordTokens.length === 0) return false;
+  if (categoryTokens.length === 0) return true;
+
+  const aliasMap: Record<string, string[]> = {
+    electronics: ["earbuds", "headphones", "audio", "gadgets", "bluetooth"],
+    wearables: ["watch", "watches", "band", "fitness", "smartwatch"],
+    headphones: ["earbuds", "headphones", "audio", "noise", "anc"],
+    computer: ["adapter", "wifi", "wireless", "network", "router", "usb"],
+    accessory: ["adapter", "cable", "wireless", "usb", "network"],
+    networking: ["adapter", "wifi", "wireless", "network", "router"],
+    network: ["adapter", "wifi", "wireless", "router", "ethernet"],
+    adapter: ["adapter", "wireless", "wifi", "usb"],
+  };
+
+  const mapped = categoryTokens.flatMap((token) => aliasMap[token] ?? []);
+  const acceptedTokens = new Set([...categoryTokens, ...mapped, ...exampleTokens]);
+
+  return keywordTokens.some((token) => {
+    if (acceptedTokens.has(token)) return true;
+    if (token.length < 4) return false;
+    return Array.from(acceptedTokens).some((accepted) => accepted.includes(token) || token.includes(accepted));
+  });
+}
+
+function percentile(values: number[], p: number) {
+  if (values.length === 0) return null;
+  const sorted = [...values].sort((a, b) => a - b);
+  const idx = clamp(Math.round((sorted.length - 1) * p), 0, sorted.length - 1);
+  return sorted[idx] ?? null;
 }
 
 export default function Page() {
@@ -90,6 +230,8 @@ export default function Page() {
   const [categoryColumn, setCategoryColumn] = useState("");
   const [dateColumn, setDateColumn] = useState("");
   const [valueColumn, setValueColumn] = useState("");
+  const [priceColumn, setPriceColumn] = useState("");
+  const [previewColumn, setPreviewColumn] = useState("");
   const [validationMessage, setValidationMessage] = useState("");
   const [availableCategories, setAvailableCategories] = useState<string[]>([]);
   const [uploadConfirmed, setUploadConfirmed] = useState(false);
@@ -109,7 +251,20 @@ export default function Page() {
   const hasDataSource = Boolean(csvName);
   const hasCategory = Boolean(category.trim());
   const hasValidCsv = uploadConfirmed && !validationMessage;
+  const keywordExamples = useMemo(
+    () => getKeywordExamplesForCategory(category, csvRecords, categoryColumn),
+    [category, csvRecords, categoryColumn]
+  );
+  const keywordAligned = isKeywordAlignedWithCategory(category, keyword, keywordExamples);
+  const keywordCategoryMessage = hasCategory && !keywordAligned
+    ? `Keyword should match selected category context. ${keywordExamples.length > 0 ? `Try: ${keywordExamples.join(", ")}` : "Try a product term from the selected category."}`
+    : "";
   const sourceLabel = csvName;
+  const csvHeaders = useMemo(() => (csvRecords.length > 0 ? Object.keys(csvRecords[0]) : []), [csvRecords]);
+  const previewRows = useMemo(
+    () => (previewColumn ? csvRecords.slice(0, 6).map((row) => row[previewColumn] ?? "") : []),
+    [csvRecords, previewColumn]
+  );
 
   useEffect(() => {
     const timer = setTimeout(() => setShowSplash(false), 2600);
@@ -168,6 +323,8 @@ export default function Page() {
         setCategoryColumn("");
         setDateColumn("");
         setValueColumn("");
+        setPriceColumn("");
+        setPreviewColumn("");
         setAvailableCategories([]);
         setCategory("");
         setValidationMessage("CSV file is empty.");
@@ -211,12 +368,29 @@ export default function Page() {
       });
 
       const preferredValueColumn =
-        numericColumns.find((col) => /(sales|units|demand|qty|quantity|volume|orders|revenue|price)/i.test(col)) ??
+        numericColumns.find((col) => /(sales|units|demand|qty|quantity|volume|orders|revenue)/i.test(col)) ??
+        numericColumns.find((col) => /(rating_count|review_count|reviews|count|purchases|sold)/i.test(col)) ??
+        numericColumns.find((col) => !/(price|rating|discount|mrp|amount|cost)/i.test(col)) ??
         numericColumns[0] ??
+        "";
+
+      const preferredPriceColumn =
+        numericColumns.find((col) => /(discounted_price|actual_price|price|mrp|amount|cost)/i.test(col)) ??
         "";
 
       const preferredDateColumn =
         headerColumns.find((col) => /(date|time|week|month|day)/i.test(col)) ?? "";
+
+      const eligibleCategories = categoryHeader && preferredValueColumn
+        ? parsedCategories.filter((cat) => {
+            const count = records.reduce((acc, row) => {
+              const catValue = (row[categoryHeader] ?? "").trim().toLowerCase();
+              const num = toNumber(row[preferredValueColumn] ?? "");
+              return catValue === cat.trim().toLowerCase() && num !== null ? acc + 1 : acc;
+            }, 0);
+            return count >= MIN_SERIES_POINTS;
+          })
+        : [];
 
       let message = "";
       if (rowCount === 0) {
@@ -225,6 +399,8 @@ export default function Page() {
         message = "CSV must contain a category column with non-empty values.";
       } else if (!preferredValueColumn) {
         message = "CSV must contain at least one mostly numeric column for forecasting.";
+      } else if (eligibleCategories.length === 0) {
+        message = `No category has at least ${MIN_SERIES_POINTS} numeric rows in '${preferredValueColumn}'.`;
       }
 
       setCsvStats({ rows: rowCount, cols: colCount, mismatched });
@@ -232,7 +408,9 @@ export default function Page() {
       setCategoryColumn(categoryHeader);
       setDateColumn(preferredDateColumn);
       setValueColumn(preferredValueColumn);
-      setAvailableCategories(parsedCategories);
+      setPriceColumn(preferredPriceColumn);
+      setPreviewColumn(headerColumns[0] ?? "");
+      setAvailableCategories(eligibleCategories);
       setCategory("");
       setValidationMessage(message);
       setUploadConfirmed(true);
@@ -242,7 +420,7 @@ export default function Page() {
   };
 
   const onRunAnalytics = () => {
-    if (!hasDataSource || !uploadConfirmed || !hasValidCsv || !hasCategory || !hasEnoughSeries) return;
+    if (!hasDataSource || !uploadConfirmed || !hasValidCsv || !hasCategory || !hasEnoughSeries || !keywordAligned) return;
     if (progressTimerRef.current) clearInterval(progressTimerRef.current);
 
     setRunning(true);
@@ -299,8 +477,33 @@ export default function Page() {
         : "";
 
   const historySeries = hasEnoughSeries ? categorySeries.slice(-MIN_SERIES_POINTS) : [];
-  const mockDates = historySeries.map((point) => point.date);
-  const hist = historySeries.map((point) => Math.round(point.value));
+
+  const normalizedHistory = useMemo(() => {
+    if (historySeries.length === 0) return [] as Array<{ date: string; value: number }>;
+
+    const parsed = historySeries
+      .map((point) => ({ date: toDateOrNull(point.date), value: point.value }))
+      .filter((point): point is { date: Date; value: number } => point.date !== null)
+      .sort((a, b) => a.date.getTime() - b.date.getTime());
+
+    const now = new Date();
+    const sixMonthsAgo = new Date(now);
+    sixMonthsAgo.setMonth(now.getMonth() - 6);
+
+    // Rebase stale or invalid history to a recent weekly timeline to avoid large visual gaps.
+    if (parsed.length < historySeries.length || parsed.length === 0 || parsed[parsed.length - 1].date < sixMonthsAgo) {
+      return historySeries.map((point, idx) => {
+        const d = new Date(now);
+        d.setDate(now.getDate() - (historySeries.length - 1 - idx) * 7);
+        return { date: d.toISOString().slice(0, 10), value: point.value };
+      });
+    }
+
+    return parsed.map((point) => ({ date: point.date.toISOString().slice(0, 10), value: point.value }));
+  }, [historySeries]);
+
+  const mockDates = normalizedHistory.map((point) => point.date);
+  const hist = normalizedHistory.map((point) => Math.round(point.value));
 
   const lastHistDate = mockDates.length > 0 ? new Date(mockDates[mockDates.length - 1]) : new Date();
   const validLastDate = Number.isFinite(lastHistDate.getTime()) ? lastHistDate : new Date();
@@ -312,16 +515,22 @@ export default function Page() {
 
   const histAvg = hist.length > 0 ? hist.reduce((sum, value) => sum + value, 0) / hist.length : 100;
   const trendSlope = hist.length > 1 ? (hist[hist.length - 1] - hist[0]) / (hist.length - 1) : 0;
-  const keywordFactor = 1 + ((cleanKeyword.length % 7) - 3) * 0.01;
+  const keywordHash = hashString(cleanKeyword);
+  const categoryHash = hashString(category.trim().toLowerCase());
+  const scenarioHash = hashString(`${category.trim().toLowerCase()}|${cleanKeyword}|${valueColumn}`);
+  const keywordFactor = 1 + (((keywordHash % 17) - 8) * 0.006) + (((categoryHash % 11) - 5) * 0.003);
+  const seasonalPhase = ((scenarioHash % 360) * Math.PI) / 180;
+  const slopeJitter = ((scenarioHash % 7) - 3) * 0.18;
+  const amplitudeJitter = 2 + (scenarioHash % 5);
 
   const xgbForecast = Array.from({ length: horizon }, (_, i) => {
-    const baseline = (hist[hist.length - 1] ?? histAvg) + trendSlope * (i + 1);
-    const seasonal = Math.sin((i + 1) / 2) * (Math.abs(trendSlope) + 2);
+    const baseline = (hist[hist.length - 1] ?? histAvg) + (trendSlope + slopeJitter) * (i + 1);
+    const seasonal = Math.sin((i + 1) / 2 + seasonalPhase) * (Math.abs(trendSlope) + amplitudeJitter);
     return Math.max(1, Math.round((baseline + seasonal) * keywordFactor));
   });
 
   const arimaForecast = xgbForecast.map((value, i) => {
-    const smoothingPenalty = Math.max(1, Math.round(Math.abs(trendSlope) * 0.4 + i * 0.5));
+    const smoothingPenalty = Math.max(1, Math.round(Math.abs(trendSlope + slopeJitter) * 0.45 + i * 0.55));
     return Math.max(1, value - smoothingPenalty);
   });
 
@@ -331,17 +540,31 @@ export default function Page() {
 
   const testDates = mockDates.slice(-8);
   const testActual = hist.slice(-8);
-  const arimaPred = testActual.map((v, i) => Math.max(1, Math.round(v - (1 + i * 0.6))));
-  const xgbPred = testActual.map((v, i) => Math.max(1, Math.round(v - (0.5 + i * 0.35))));
+  const fitOffset = ((scenarioHash % 9) - 4) * 0.25;
+  const arimaPred = testActual.map((v, i) => Math.max(1, Math.round(v - (1.1 + i * 0.55 + fitOffset))));
+  const xgbPred = testActual.map((v, i) => Math.max(1, Math.round(v - (0.45 + i * 0.32 - fitOffset * 0.35))));
 
   const histMin = hist.length > 0 ? Math.min(...hist) : 0;
   const histMax = hist.length > 0 ? Math.max(...hist) : 1;
   const histRange = Math.max(histMax - histMin, 1);
-  const keywordShift = (cleanKeyword.length % 9) - 4;
+  const keywordShift = ((keywordHash % 9) - 4) + ((categoryHash % 5) - 2);
   const trendsSeries = hist.map((value) => clamp(Math.round(((value - histMin) / histRange) * 70 + 20 + keywordShift), 0, 100));
 
-  const priceBase = Math.max(499, Math.round(799 + histAvg * 2));
-  const prices = Array.from({ length: 10 }, (_, i) => priceBase + i * 100);
+  const categoryPriceValues = useMemo(() => {
+    if (!priceColumn || !category || !categoryColumn) return [] as number[];
+    return csvRecords
+      .filter((row) => (row[categoryColumn] ?? "").trim().toLowerCase() === category.trim().toLowerCase())
+      .map((row) => toNumber(row[priceColumn] ?? ""))
+      .filter((value): value is number => value !== null);
+  }, [category, categoryColumn, csvRecords, priceColumn]);
+
+  const priceAnchorFromCsv = percentile(categoryPriceValues, 0.5);
+  const fallbackPriceAnchor = Math.max(499, Math.round(749 + histAvg * 2 + (categoryHash % 140) - 70));
+  const priceAnchor = priceAnchorFromCsv ?? fallbackPriceAnchor;
+  const minPrice = Math.max(99, Math.round((priceAnchor * 0.7) / 10) * 10);
+  const maxPrice = Math.max(minPrice + 90, Math.round((priceAnchor * 1.3) / 10) * 10);
+  const priceStep = Math.max(10, Math.round((maxPrice - minPrice) / 9 / 10) * 10);
+  const prices = Array.from({ length: 10 }, (_, i) => minPrice + i * priceStep);
   const revenue = prices.map((price, i) => {
     const demandAtPrice = Math.max(bestUnits - i * Math.max(3, Math.round(Math.abs(trendSlope) + 2)), 5);
     return Math.round(price * demandAtPrice);
@@ -466,6 +689,26 @@ export default function Page() {
                       setCompleted(false);
                     }}
                   />
+                  {uploadConfirmed && hasCategory && keywordExamples.length > 0 && (
+                    <div className="mt-2 rounded-md border border-sky-100 bg-sky-50 px-3 py-2">
+                      <p className="text-xs text-sky-900">
+                        Suggested for {category}: {" "}
+                        {keywordExamples.map((example, idx) => (
+                          <button
+                            key={example}
+                            type="button"
+                            className="font-medium underline decoration-dotted underline-offset-2 hover:text-sky-700"
+                            onClick={() => {
+                              setKeyword(example);
+                              setCompleted(false);
+                            }}
+                          >
+                            {idx > 0 ? `, ${example}` : example}
+                          </button>
+                        ))}
+                      </p>
+                    </div>
+                  )}
                 </div>
               </div>
 
@@ -490,6 +733,8 @@ export default function Page() {
                           setCategoryColumn("");
                           setDateColumn("");
                           setValueColumn("");
+                          setPriceColumn("");
+                          setPreviewColumn("");
                           setValidationMessage("");
                           setAvailableCategories([]);
                           setCategory("");
@@ -542,6 +787,8 @@ export default function Page() {
                           setCategoryColumn("");
                           setDateColumn("");
                           setValueColumn("");
+                          setPriceColumn("");
+                          setPreviewColumn("");
                           setValidationMessage("");
                           setAvailableCategories([]);
                           setCategory("");
@@ -569,6 +816,45 @@ export default function Page() {
                   </div>
                 )}
 
+                {uploadConfirmed && csvHeaders.length > 0 && (
+                  <div className="rounded-lg border border-slate-200 bg-white px-4 py-3">
+                    <div className="grid gap-3 md:grid-cols-[240px_1fr] md:items-start">
+                      <div>
+                        <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-slate-600">Quick CSV Preview</label>
+                        <select
+                          value={previewColumn}
+                          onChange={(e) => setPreviewColumn(e.target.value)}
+                          className="w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm focus:border-sky-500 focus:outline-none focus:ring-2 focus:ring-sky-100"
+                        >
+                          {csvHeaders.map((header) => (
+                            <option key={header} value={header}>
+                              {header}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                      <div className="overflow-x-auto">
+                        <table className="min-w-full text-xs">
+                          <thead>
+                            <tr className="border-b border-slate-200 text-slate-600">
+                              <th className="px-2 py-1.5 text-left font-semibold">Row</th>
+                              <th className="px-2 py-1.5 text-left font-semibold">{previewColumn}</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {previewRows.map((value, index) => (
+                              <tr key={`${previewColumn}-${index}`} className="border-b border-slate-100">
+                                <td className="px-2 py-1.5 text-slate-500">{index + 1}</td>
+                                <td className="px-2 py-1.5 text-slate-800">{value || "-"}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
                 {validationMessage && (
                   <div className="rounded-lg border border-rose-300 bg-rose-50 px-4 py-3">
                     <p className="text-sm text-rose-900">{validationMessage}</p>
@@ -581,11 +867,17 @@ export default function Page() {
                   </div>
                 )}
 
+                {!validationMessage && uploadConfirmed && hasCategory && !keywordAligned && (
+                  <div className="rounded-lg border border-amber-300 bg-amber-50 px-4 py-3">
+                    <p className="text-sm text-amber-900">{keywordCategoryMessage}</p>
+                  </div>
+                )}
+
                 {/* Action Buttons */}
                 <div className="flex flex-col gap-2 sm:flex-row sm:gap-3 pt-2 border-t border-slate-200">
                   <Button 
                     onClick={onRunAnalytics} 
-                    disabled={!hasDataSource || !uploadConfirmed || !hasValidCsv || !hasCategory || !hasEnoughSeries || running || confirmingUpload}
+                    disabled={!hasDataSource || !uploadConfirmed || !hasValidCsv || !hasCategory || !hasEnoughSeries || !keywordAligned || running || confirmingUpload}
                     className="flex-1 h-11 text-base"
                   >
                     {running ? "Running Analytics..." : "Run Analytics"}
@@ -602,6 +894,8 @@ export default function Page() {
                       setCategoryColumn("");
                       setDateColumn("");
                       setValueColumn("");
+                      setPriceColumn("");
+                      setPreviewColumn("");
                       setValidationMessage("");
                       setAvailableCategories([]);
                       setCategory("");
@@ -630,6 +924,11 @@ export default function Page() {
                   {uploadConfirmed && valueColumn && (
                     <p className="mt-1 text-xs text-blue-800">
                       Forecast metric column: <span className="font-semibold">{valueColumn}</span>
+                    </p>
+                  )}
+                  {uploadConfirmed && priceColumn && (
+                    <p className="mt-1 text-xs text-blue-800">
+                      Price anchor column: <span className="font-semibold">{priceColumn}</span>
                     </p>
                   )}
                 </motion.div>
