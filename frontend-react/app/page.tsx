@@ -399,12 +399,14 @@ export default function Page() {
           >
             {/* Header Section */}
             <header className="rounded-2xl border border-[#eadfce] bg-[#F8F1E7] px-4 py-6 text-center shadow-sm">
-              <div className="flex justify-center">
-                <img
-                  src="/optezum-logo.svg"
-                  alt="Optezum"
-                  className="h-auto w-[240px] sm:w-[320px] md:w-[420px]"
-                />
+              <div className="h-12 md:h-14">
+                <GradientWaveText 
+                  className="text-2xl md:text-3xl lg:text-4xl font-semibold"
+                  speed={0.8}
+                  customColors={["#0284c7", "#06b6d4", "#10b981", "#f59e0b", "#ef4444"]}
+                >
+                  Welcome to Optezum
+                </GradientWaveText>
               </div>
               <div className="mt-3 flex justify-center">
                 <AnimatedTextCycle 
