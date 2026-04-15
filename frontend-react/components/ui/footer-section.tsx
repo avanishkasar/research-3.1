@@ -10,6 +10,11 @@ export function FooterSection() {
     <footer className="relative mx-auto mt-10 w-full max-w-6xl rounded-t-3xl border-t bg-muted/40 px-6 py-10">
       <div className="grid gap-8 md:grid-cols-4">
         <AnimatedContainer>
+          <img
+            src="/optezum-logo.svg"
+            alt="Optezum"
+            className="mb-3 h-auto w-28"
+          />
           <a href={REPO_URL} target="_blank" rel="noreferrer" aria-label="GitHub repository" className="inline-flex">
             <GithubIcon className="mb-3 h-7 w-7" />
           </a>

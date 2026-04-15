@@ -1,26 +1,37 @@
-# ML Research Forecast Studio
+# Optezum - ML Research Forecasting Project
 
-This repository contains a forecasting research project that combines sales data, Google Trends signals, and interactive analytics.
+Optezum combines research notebooks (SARIMA/XGBoost + Google Trends) with a Next.js web app for interactive forecasting demos.
 
-## What’s inside
-- Python notebooks and scripts for data preparation and forecasting
-- A React/Next.js frontend in `frontend-react`
-- Deployment files for Railway and Docker
+## Repository structure
+- `notebooks/` - research pipeline (`01` to `06`) for data prep, SARIMA baseline, XGBoost with trends, and comparison.
+- `src/` - Python helper scripts (synthetic sales generation and Google Trends fetching).
+- `frontend-react/` - Next.js app used for UI interaction, CSV ingestion, and visual forecasting flow.
+- `data/` - raw/processed project datasets and model result artifacts.
 
-## Run locally
+## Local development
+### 1) Python environment
 ```bash
 pip install -r requirements.txt
+```
+
+### 2) Frontend app
+```bash
 cd frontend-react
 npm install
 npm run dev
 ```
 
-## Build and deploy
-- Railway uses the root `Dockerfile`.
-- The frontend app is built from `frontend-react`.
+Open `http://localhost:3000`.
 
-## Main project areas
-- `src/` for Python scripts
-- `notebooks/` for analysis
-- `frontend-react/` for the UI
-- `data/` for datasets and outputs
+## Research vs app runtime
+- Notebooks are the primary place where full research model training is performed.
+- The frontend currently provides an interactive, CSV-driven demo pipeline and visual analytics experience.
+
+## Deployment (Railway)
+- Railway build uses root `Dockerfile`.
+- Runtime settings are managed via root `railway.json`.
+- Frontend assets and app source are under `frontend-react/`.
+
+## Privacy and secrets
+- Do not commit `.env`, credentials, API keys, or personal machine files.
+- Existing `.gitignore` already excludes common private/local artifacts such as `.venv/`, `.env`, and `node_modules/`.

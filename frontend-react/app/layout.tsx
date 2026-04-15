@@ -3,7 +3,12 @@ import "./globals.css";
 
 export const metadata: Metadata = {
   title: "Optezum",
-  description: "Optezum - demand forecasting and price optimization"
+  description: "Optezum - demand forecasting and price optimization",
+  icons: {
+    icon: "/icon.svg",
+    shortcut: "/icon.svg",
+    apple: "/icon.svg"
+  }
 };
 
 export default function RootLayout({

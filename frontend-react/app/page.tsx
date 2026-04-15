@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import dynamic from "next/dynamic";
 import { motion, AnimatePresence } from "framer-motion";
 import type { PlotParams } from "react-plotly.js";
@@ -22,24 +22,49 @@ type CsvStats = {
   mismatched: boolean;
 };
 
-const EXPECTED_COLUMNS = 5;
+type CsvRecord = Record<string, string>;
 
-function hashString(value: string) {
-  let hash = 2166136261;
-  for (let i = 0; i < value.length; i += 1) {
-    hash ^= value.charCodeAt(i);
-    hash = Math.imul(hash, 16777619);
+const MIN_SERIES_POINTS = 18;
+
+function parseCsvLine(line: string) {
+  const cells: string[] = [];
+  let current = "";
+  let inQuotes = false;
+
+  for (let i = 0; i < line.length; i += 1) {
+    const char = line[i];
+
+    if (char === '"') {
+      if (inQuotes && line[i + 1] === '"') {
+        current += '"';
+        i += 1;
+      } else {
+        inQuotes = !inQuotes;
+      }
+      continue;
+    }
+
+    if (char === "," && !inQuotes) {
+      cells.push(current.trim());
+      current = "";
+      continue;
+    }
+
+    current += char;
   }
-  return Math.abs(hash >>> 0);
+
+  cells.push(current.trim());
+  return cells;
 }
 
-function makeRng(seed: number) {
-  let t = seed + 0x6d2b79f5;
-  return () => {
-    t = Math.imul(t ^ (t >>> 15), t | 1);
-    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
+function toNumber(value: string) {
+  const normalized = value.replace(/,/g, "").trim();
+  const n = Number(normalized);
+  return Number.isFinite(n) ? n : null;
+}
+
+function clamp(value: number, min: number, max: number) {
+  return Math.min(max, Math.max(min, value));
 }
 
 export default function Page() {
@@ -59,7 +84,13 @@ export default function Page() {
   const [showSplash, setShowSplash] = useState(true);
   const [csvName, setCsvName] = useState("");
   const [uploadedFile, setUploadedFile] = useState<File | null>(null);
+  const [demoCsvContent, setDemoCsvContent] = useState("");
   const [csvStats, setCsvStats] = useState<CsvStats | null>(null);
+  const [csvRecords, setCsvRecords] = useState<CsvRecord[]>([]);
+  const [categoryColumn, setCategoryColumn] = useState("");
+  const [dateColumn, setDateColumn] = useState("");
+  const [valueColumn, setValueColumn] = useState("");
+  const [validationMessage, setValidationMessage] = useState("");
   const [availableCategories, setAvailableCategories] = useState<string[]>([]);
   const [uploadConfirmed, setUploadConfirmed] = useState(false);
   const [confirmingUpload, setConfirmingUpload] = useState(false);
@@ -73,9 +104,11 @@ export default function Page() {
   const [loadingDot, setLoadingDot] = useState(0);
   const [chartTab, setChartTab] = useState<"forecast" | "fit" | "trends" | "revenue">("forecast");
   const progressTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const progressSectionRef = useRef<HTMLElement | null>(null);
 
   const hasDataSource = Boolean(csvName);
   const hasCategory = Boolean(category.trim());
+  const hasValidCsv = uploadConfirmed && !validationMessage;
   const sourceLabel = csvName;
 
   useEffect(() => {
@@ -100,8 +133,19 @@ export default function Page() {
     return () => clearInterval(dotTimer);
   }, [running]);
 
+  useEffect(() => {
+    if (!running || !progressSectionRef.current) return;
+
+    requestAnimationFrame(() => {
+      progressSectionRef.current?.scrollIntoView({
+        behavior: "smooth",
+        block: "start",
+      });
+    });
+  }, [running]);
+
   const onConfirmUpload = async () => {
-    if (!uploadedFile) return;
+    if (!uploadedFile && !demoCsvContent) return;
 
     setConfirmingUpload(true);
     setUploadConfirmed(false);
@@ -109,44 +153,88 @@ export default function Page() {
     setRunning(false);
     setProgress(0);
     setCurrentStep(0);
+    setValidationMessage("");
 
     try {
-      const content = await uploadedFile.text();
+      const content = uploadedFile ? await uploadedFile.text() : demoCsvContent;
       const lines = content
         .split(/\r?\n/)
-        .map((line) => line.trim())
+        .map((line) => line.replace(/\uFEFF/g, "").trim())
         .filter((line) => line.length > 0);
 
       if (lines.length === 0) {
         setCsvStats({ rows: 0, cols: 0, mismatched: true });
+        setCsvRecords([]);
+        setCategoryColumn("");
+        setDateColumn("");
+        setValueColumn("");
         setAvailableCategories([]);
         setCategory("");
+        setValidationMessage("CSV file is empty.");
         setUploadConfirmed(true);
         return;
       }
 
-      const headerColumns = lines[0].split(",").map((cell) => cell.trim());
+      const headerColumns = parseCsvLine(lines[0]).map((cell) => cell.trim());
       const rowCount = Math.max(lines.length - 1, 0);
       const colCount = headerColumns.length;
-      const mismatched = colCount !== EXPECTED_COLUMNS;
+      const rawRows = lines.slice(1).map((line) => parseCsvLine(line));
+      const mismatched = rawRows.some((cells) => cells.length !== colCount);
 
-      const categoryHeaderIndex = headerColumns.findIndex((col) => /category/i.test(col));
-      const parsedCategories =
-        categoryHeaderIndex >= 0
-          ? Array.from(
-              new Set(
-                lines
-                  .slice(1)
-                  .map((line) => line.split(","))
-                  .map((cells) => cells[categoryHeaderIndex]?.trim() ?? "")
-                  .filter((value) => value.length > 0)
-              )
-            ).slice(0, 8)
-          : ["Electronics", "Headphones", "Wearables"];
+      const normalizedRows = rawRows.map((cells) => {
+        if (cells.length >= colCount) return cells.slice(0, colCount);
+        return [...cells, ...Array.from({ length: colCount - cells.length }, () => "")];
+      });
+
+      const records: CsvRecord[] = normalizedRows.map((cells) => {
+        const record: CsvRecord = {};
+        headerColumns.forEach((header, idx) => {
+          record[header] = cells[idx] ?? "";
+        });
+        return record;
+      });
+
+      const categoryHeader = headerColumns.find((col) => /category/i.test(col)) ?? "";
+      const parsedCategories = categoryHeader
+        ? Array.from(
+            new Set(
+              records
+                .map((row) => row[categoryHeader]?.trim() ?? "")
+                .filter((value) => value.length > 0)
+            )
+          )
+        : [];
+
+      const numericColumns = headerColumns.filter((header) => {
+        const numericCount = records.reduce((count, row) => (toNumber(row[header] ?? "") !== null ? count + 1 : count), 0);
+        return records.length > 0 && numericCount / records.length >= 0.7;
+      });
+
+      const preferredValueColumn =
+        numericColumns.find((col) => /(sales|units|demand|qty|quantity|volume|orders|revenue|price)/i.test(col)) ??
+        numericColumns[0] ??
+        "";
+
+      const preferredDateColumn =
+        headerColumns.find((col) => /(date|time|week|month|day)/i.test(col)) ?? "";
+
+      let message = "";
+      if (rowCount === 0) {
+        message = "CSV contains no data rows.";
+      } else if (!categoryHeader || parsedCategories.length === 0) {
+        message = "CSV must contain a category column with non-empty values.";
+      } else if (!preferredValueColumn) {
+        message = "CSV must contain at least one mostly numeric column for forecasting.";
+      }
 
       setCsvStats({ rows: rowCount, cols: colCount, mismatched });
+      setCsvRecords(records);
+      setCategoryColumn(categoryHeader);
+      setDateColumn(preferredDateColumn);
+      setValueColumn(preferredValueColumn);
       setAvailableCategories(parsedCategories);
       setCategory("");
+      setValidationMessage(message);
       setUploadConfirmed(true);
     } finally {
       setTimeout(() => setConfirmingUpload(false), 700);
@@ -154,7 +242,7 @@ export default function Page() {
   };
 
   const onRunAnalytics = () => {
-    if (!hasDataSource || !uploadConfirmed) return;
+    if (!hasDataSource || !uploadConfirmed || !hasValidCsv || !hasCategory || !hasEnoughSeries) return;
     if (progressTimerRef.current) clearInterval(progressTimerRef.current);
 
     setRunning(true);
@@ -179,43 +267,62 @@ export default function Page() {
   };
 
   const cleanKeyword = keyword.trim() || "earbuds india";
-  const rowFactor = csvStats?.rows ?? 0;
-  const colFactor = csvStats?.cols ?? 0;
-  const mismatchPenalty = csvStats?.mismatched ? 7 : 0;
-  const seed = hashString(`${category}|${cleanKeyword}|${rowFactor}|${colFactor}|${horizon}`);
-  const rng = makeRng(seed);
 
-  const mockDates = Array.from({ length: 18 }, (_, i) => {
-    const date = new Date(2025, 0, 1 + i * 7);
-    return date.toISOString().slice(0, 10);
-  });
+  const categorySeries = useMemo(() => {
+    if (!categoryColumn || !valueColumn || !category) return [] as Array<{ date: string; value: number }>;
+
+    const categoryRows = csvRecords.filter(
+      (row) => (row[categoryColumn] ?? "").trim().toLowerCase() === category.trim().toLowerCase()
+    );
+
+    return categoryRows
+      .map((row, index) => {
+        const numericValue = toNumber(row[valueColumn] ?? "");
+        if (numericValue === null) return null;
+        const rawDate = dateColumn ? (row[dateColumn] ?? "").trim() : "";
+        const parsedDate = rawDate ? new Date(rawDate) : null;
+        const dateLabel = parsedDate && Number.isFinite(parsedDate.getTime())
+          ? parsedDate.toISOString().slice(0, 10)
+          : `row-${index + 1}`;
+        return { date: dateLabel, value: numericValue };
+      })
+      .filter((point): point is { date: string; value: number } => point !== null);
+  }, [category, categoryColumn, csvRecords, dateColumn, valueColumn]);
+
+  const hasEnoughSeries = categorySeries.length >= MIN_SERIES_POINTS;
+  const analysisBlockedMessage = !hasValidCsv
+    ? validationMessage
+    : !hasCategory
+      ? "Select a category extracted from your CSV."
+      : !hasEnoughSeries
+        ? `Selected category needs at least ${MIN_SERIES_POINTS} numeric rows in '${valueColumn || "value"}'.`
+        : "";
+
+  const historySeries = hasEnoughSeries ? categorySeries.slice(-MIN_SERIES_POINTS) : [];
+  const mockDates = historySeries.map((point) => point.date);
+  const hist = historySeries.map((point) => Math.round(point.value));
+
+  const lastHistDate = mockDates.length > 0 ? new Date(mockDates[mockDates.length - 1]) : new Date();
+  const validLastDate = Number.isFinite(lastHistDate.getTime()) ? lastHistDate : new Date();
   const futureDates = Array.from({ length: horizon }, (_, i) => {
-    const date = new Date(2025, 4, 1 + i * 7);
+    const date = new Date(validLastDate);
+    date.setDate(date.getDate() + (i + 1) * 7);
     return date.toISOString().slice(0, 10);
   });
 
-  const categoryBoost =
-    category === "Electronics" ? 12 : category === "Headphones" ? 18 : category === "Wearables" ? 8 : 0;
-  const baseDemand = 120 + Math.floor((rowFactor % 37) / 2) + categoryBoost - mismatchPenalty;
-
-  const hist = Array.from({ length: 18 }, (_, i) => {
-    const seasonality = Math.sin(i / 2.8) * 6;
-    const trend = i * 2.7;
-    const noise = (rng() - 0.5) * 5;
-    return Math.max(40, Math.round(baseDemand - 30 + trend + seasonality + noise));
-  });
+  const histAvg = hist.length > 0 ? hist.reduce((sum, value) => sum + value, 0) / hist.length : 100;
+  const trendSlope = hist.length > 1 ? (hist[hist.length - 1] - hist[0]) / (hist.length - 1) : 0;
+  const keywordFactor = 1 + ((cleanKeyword.length % 7) - 3) * 0.01;
 
   const xgbForecast = Array.from({ length: horizon }, (_, i) => {
-    const growth = 6 + i * 5.2;
-    const keywordLift = (cleanKeyword.length % 9) * 1.3;
-    const dataLift = Math.log2(Math.max(rowFactor, 2)) * 2.2;
-    const noise = (rng() - 0.5) * 4;
-    return Math.max(45, Math.round(baseDemand + growth + keywordLift + dataLift + noise));
+    const baseline = (hist[hist.length - 1] ?? histAvg) + trendSlope * (i + 1);
+    const seasonal = Math.sin((i + 1) / 2) * (Math.abs(trendSlope) + 2);
+    return Math.max(1, Math.round((baseline + seasonal) * keywordFactor));
   });
 
   const arimaForecast = xgbForecast.map((value, i) => {
-    const correction = 4 + (i % 3) * 1.1 + (rng() - 0.5) * 2;
-    return Math.max(40, Math.round(value - correction));
+    const smoothingPenalty = Math.max(1, Math.round(Math.abs(trendSlope) * 0.4 + i * 0.5));
+    return Math.max(1, value - smoothingPenalty);
   });
 
   const bestUnits = Math.max(...xgbForecast);
@@ -224,26 +331,43 @@ export default function Page() {
 
   const testDates = mockDates.slice(-8);
   const testActual = hist.slice(-8);
-  const arimaPred = testActual.map((v, i) => Math.max(40, Math.round(v - (2 + i * 0.7 + (rng() - 0.5) * 1.5))));
-  const xgbPred = testActual.map((v, i) => Math.max(40, Math.round(v - (1 + i * 0.4 + (rng() - 0.5) * 1.2))));
-  const trendsSeries = Array.from({ length: 18 }, (_, i) => {
-    const base = 42 + (cleanKeyword.length % 12);
-    const climb = i * 2.4;
-    const oscillation = Math.sin(i / 2.2) * 4;
-    const noise = (rng() - 0.5) * 3;
-    return Math.max(8, Math.min(100, Math.round(base + climb + oscillation + noise)));
-  });
+  const arimaPred = testActual.map((v, i) => Math.max(1, Math.round(v - (1 + i * 0.6))));
+  const xgbPred = testActual.map((v, i) => Math.max(1, Math.round(v - (0.5 + i * 0.35))));
 
-  const priceBase = 1299 + (categoryBoost + (rowFactor % 10) * 10);
+  const histMin = hist.length > 0 ? Math.min(...hist) : 0;
+  const histMax = hist.length > 0 ? Math.max(...hist) : 1;
+  const histRange = Math.max(histMax - histMin, 1);
+  const keywordShift = (cleanKeyword.length % 9) - 4;
+  const trendsSeries = hist.map((value) => clamp(Math.round(((value - histMin) / histRange) * 70 + 20 + keywordShift), 0, 100));
+
+  const priceBase = Math.max(499, Math.round(799 + histAvg * 2));
   const prices = Array.from({ length: 10 }, (_, i) => priceBase + i * 100);
   const revenue = prices.map((price, i) => {
-    const demandAtPrice = Math.max(bestUnits - i * (8 + (cleanKeyword.length % 4)), 35);
-    const cleanedMultiplier = csvStats?.mismatched ? 0.93 : 1.03;
-    return Math.round(price * demandAtPrice * cleanedMultiplier);
+    const demandAtPrice = Math.max(bestUnits - i * Math.max(3, Math.round(Math.abs(trendSlope) + 2)), 5);
+    return Math.round(price * demandAtPrice);
   });
   const optRev = Math.max(...revenue);
   const optIdx = revenue.findIndex((r) => r === optRev);
   const optPrice = prices[Math.max(optIdx, 0)] ?? prices[0];
+
+  const rmse = testActual.length
+    ? Math.sqrt(
+        testActual.reduce((sum, actual, index) => {
+          const pred = xgbPred[index] ?? actual;
+          return sum + (actual - pred) ** 2;
+        }, 0) / testActual.length
+      )
+    : 0;
+
+  const mape = testActual.length
+    ? (testActual.reduce((sum, actual, index) => {
+        if (actual === 0) return sum;
+        const pred = xgbPred[index] ?? actual;
+        return sum + Math.abs((actual - pred) / actual);
+      }, 0) /
+        testActual.length) *
+      100
+    : 0;
 
   return (
     <div className="min-h-screen bg-white text-slate-900">
@@ -258,9 +382,11 @@ export default function Page() {
           >
             <ShaderAnimation />
             <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
-              <h1 className="text-center text-4xl font-semibold tracking-tight text-white md:text-6xl">
-                Optezum
-              </h1>
+              <img
+                src="/optezum-logo.svg"
+                alt="Optezum"
+                className="h-auto w-[280px] sm:w-[360px] md:w-[520px]"
+              />
             </div>
           </motion.section>
         ) : (
@@ -273,14 +399,12 @@ export default function Page() {
           >
             {/* Header Section */}
             <header className="rounded-2xl border border-[#eadfce] bg-[#F8F1E7] px-4 py-6 text-center shadow-sm">
-              <div className="h-12 md:h-14">
-                <GradientWaveText 
-                  className="text-2xl md:text-3xl lg:text-4xl font-semibold"
-                  speed={0.8}
-                  customColors={["#0284c7", "#06b6d4", "#10b981", "#f59e0b", "#ef4444"]}
-                >
-                  Welcome to Optezum
-                </GradientWaveText>
+              <div className="flex justify-center">
+                <img
+                  src="/optezum-logo.svg"
+                  alt="Optezum"
+                  className="h-auto w-[240px] sm:w-[320px] md:w-[420px]"
+                />
               </div>
               <div className="mt-3 flex justify-center">
                 <AnimatedTextCycle 
@@ -357,8 +481,14 @@ export default function Page() {
                           const selectedFile = e.target.files?.[0] ?? null;
                           const selectedName = selectedFile?.name ?? "";
                           setUploadedFile(selectedFile);
+                          setDemoCsvContent("");
                           setCsvName(selectedName);
                           setCsvStats(null);
+                          setCsvRecords([]);
+                          setCategoryColumn("");
+                          setDateColumn("");
+                          setValueColumn("");
+                          setValidationMessage("");
                           setAvailableCategories([]);
                           setCategory("");
                           setUploadConfirmed(false);
@@ -386,11 +516,44 @@ export default function Page() {
                     <Button
                       type="button"
                       onClick={onConfirmUpload}
-                      disabled={!uploadedFile || confirmingUpload}
+                      disabled={(!uploadedFile && !demoCsvContent) || confirmingUpload}
                       className="h-11 min-w-40"
                       variant={uploadConfirmed ? "default" : "secondary"}
                     >
                       {confirmingUpload ? "Confirming..." : uploadConfirmed ? "Upload Confirmed" : "Confirm Upload CSV"}
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      className="mt-2 h-11 min-w-40"
+                      disabled={confirmingUpload}
+                      onClick={async () => {
+                        try {
+                          const response = await fetch("/demo-data/optezum-demo.csv");
+                          const content = await response.text();
+
+                          setUploadedFile(null);
+                          setDemoCsvContent(content);
+                          setCsvName("optezum-demo.csv");
+                          setCsvStats(null);
+                          setCsvRecords([]);
+                          setCategoryColumn("");
+                          setDateColumn("");
+                          setValueColumn("");
+                          setValidationMessage("");
+                          setAvailableCategories([]);
+                          setCategory("");
+                          setUploadConfirmed(false);
+                          setCompleted(false);
+                          setRunning(false);
+                          setProgress(0);
+                          setCurrentStep(0);
+                        } catch {
+                          setValidationMessage("Unable to load demo CSV from /demo-data/optezum-demo.csv.");
+                        }
+                      }}
+                    >
+                      Use Demo CSV
                     </Button>
                   </div>
                 </div>
@@ -398,9 +561,21 @@ export default function Page() {
                 {csvStats && csvStats.mismatched && (
                   <div className="rounded-lg border border-amber-300 bg-amber-50 px-4 py-3">
                     <p className="text-sm text-amber-900">
-                      Column mismatch detected ({csvStats.cols} found, expected {EXPECTED_COLUMNS}).
-                      The pipeline will auto-clean and align schema before forecasting.
+                      Some rows have column-count mismatch (header has {csvStats.cols} columns).
+                      The pipeline will normalize these rows before forecasting.
                     </p>
+                  </div>
+                )}
+
+                {validationMessage && (
+                  <div className="rounded-lg border border-rose-300 bg-rose-50 px-4 py-3">
+                    <p className="text-sm text-rose-900">{validationMessage}</p>
+                  </div>
+                )}
+
+                {!validationMessage && uploadConfirmed && hasCategory && !hasEnoughSeries && (
+                  <div className="rounded-lg border border-amber-300 bg-amber-50 px-4 py-3">
+                    <p className="text-sm text-amber-900">{analysisBlockedMessage}</p>
                   </div>
                 )}
 
@@ -408,7 +583,7 @@ export default function Page() {
                 <div className="flex flex-col gap-2 sm:flex-row sm:gap-3 pt-2 border-t border-slate-200">
                   <Button 
                     onClick={onRunAnalytics} 
-                    disabled={!hasDataSource || !uploadConfirmed || !hasCategory || running || confirmingUpload}
+                    disabled={!hasDataSource || !uploadConfirmed || !hasValidCsv || !hasCategory || !hasEnoughSeries || running || confirmingUpload}
                     className="flex-1 h-11 text-base"
                   >
                     {running ? "Running Analytics..." : "Run Analytics"}
@@ -419,7 +594,13 @@ export default function Page() {
                     onClick={() => {
                       setCsvName("");
                       setUploadedFile(null);
+                      setDemoCsvContent("");
                       setCsvStats(null);
+                      setCsvRecords([]);
+                      setCategoryColumn("");
+                      setDateColumn("");
+                      setValueColumn("");
+                      setValidationMessage("");
                       setAvailableCategories([]);
                       setCategory("");
                       setUploadConfirmed(false);
@@ -444,13 +625,18 @@ export default function Page() {
                   <p className="text-sm text-blue-900">
                     <span className="font-semibold">Data source:</span> {sourceLabel} {uploadConfirmed ? "(confirmed)" : "(awaiting confirmation)"}
                   </p>
+                  {uploadConfirmed && valueColumn && (
+                    <p className="mt-1 text-xs text-blue-800">
+                      Forecast metric column: <span className="font-semibold">{valueColumn}</span>
+                    </p>
+                  )}
                 </motion.div>
               )}
             </section>
 
             {/* Running Progress */}
             {running && (
-              <section className="space-y-4 animate-in fade-in slide-in-from-bottom-4 duration-500">
+              <section ref={progressSectionRef} className="space-y-4 animate-in fade-in slide-in-from-bottom-4 duration-500">
                 <Alert variant="info">
                   <AlertTitle>Pipeline running</AlertTitle>
                   <AlertDescription>
@@ -458,7 +644,12 @@ export default function Page() {
                   </AlertDescription>
                 </Alert>
 
-                <div className="rounded-xl border bg-white p-5 shadow-sm">
+                <motion.div
+                  initial={{ scale: 0.985, boxShadow: "0 0 0 rgba(14, 116, 144, 0)" }}
+                  animate={{ scale: 1, boxShadow: "0 0 0 6px rgba(14, 116, 144, 0.08)" }}
+                  transition={{ duration: 0.45, ease: "easeOut" }}
+                  className="rounded-xl border bg-white p-5 shadow-sm"
+                >
                   <div className="mb-3 flex items-center gap-2">
                     <div className="h-4 w-4 animate-spin rounded-full border-2 border-slate-300 border-t-sky-600" />
                     <p className="text-sm text-slate-700">Preparing cleaned dataset and recalculating forecast outputs</p>
@@ -477,7 +668,7 @@ export default function Page() {
                   <p className="mt-3 text-sm text-slate-700 font-medium">
                     Stage {Math.max(currentStep, 1)}/10: {pipelineSteps[Math.max(currentStep - 1, 0)]}
                   </p>
-                </div>
+                </motion.div>
               </section>
             )}
 
@@ -495,13 +686,13 @@ export default function Page() {
                 <div className="grid gap-4 md:grid-cols-3">
                   <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.1 }} className="rounded-xl border bg-white p-5 shadow-sm">
                     <p className="text-xs font-semibold uppercase tracking-wide text-slate-600">Forecast RMSE</p>
-                    <p className="mt-3 text-3xl font-bold text-slate-900">{(8 + (seed % 70) / 10).toFixed(1)}</p>
-                    <p className="mt-1 text-xs text-emerald-700 font-medium">Auto-updated from current dataset profile</p>
+                    <p className="mt-3 text-3xl font-bold text-slate-900">{rmse.toFixed(2)}</p>
+                    <p className="mt-1 text-xs text-emerald-700 font-medium">Computed from selected category series in CSV</p>
                   </motion.div>
                   <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.2 }} className="rounded-xl border bg-white p-5 shadow-sm">
                     <p className="text-xs font-semibold uppercase tracking-wide text-slate-600">Forecast MAPE</p>
-                    <p className="mt-3 text-3xl font-bold text-slate-900">{(5 + (seed % 55) / 10).toFixed(1)}%</p>
-                    <p className="mt-1 text-xs text-emerald-700 font-medium">Recomputed for keyword and category inputs</p>
+                    <p className="mt-3 text-3xl font-bold text-slate-900">{mape.toFixed(2)}%</p>
+                    <p className="mt-1 text-xs text-emerald-700 font-medium">Computed from selected category series in CSV</p>
                   </motion.div>
                   <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.3 }} className="rounded-xl border bg-white p-5 shadow-sm">
                     <p className="text-xs font-semibold uppercase tracking-wide text-slate-600">Optimal Price</p>
