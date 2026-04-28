@@ -764,7 +764,7 @@ export default function Page() {
                       type="button"
                       onClick={onConfirmUpload}
                       disabled={(!uploadedFile && !demoCsvContent) || confirmingUpload}
-                      className="h-11 min-w-40"
+                      className="h-11 min-w-44 rounded-xl border border-sky-600 bg-sky-600 px-5 font-semibold text-white shadow-sm transition-all duration-200 hover:bg-sky-700 hover:shadow-md disabled:cursor-not-allowed disabled:border-slate-300 disabled:bg-slate-300 disabled:text-slate-600"
                       variant={uploadConfirmed ? "default" : "secondary"}
                     >
                       {confirmingUpload ? "Confirming..." : uploadConfirmed ? "Upload Confirmed" : "Confirm Upload CSV"}
@@ -772,8 +772,8 @@ export default function Page() {
                     <Button
                       type="button"
                       variant="outline"
-                      className="mt-2 h-11 min-w-40"
-                      disabled={confirmingUpload}
+                      className="mt-2 h-11 min-w-44 rounded-xl border-slate-300 bg-white px-5 font-medium text-slate-700 shadow-sm transition-all duration-200 hover:border-slate-400 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
+                      disabled={confirmingUpload || Boolean(uploadedFile)}
                       onClick={async () => {
                         try {
                           const response = await fetch("/demo-data/optezum-demo.csv");
@@ -802,8 +802,13 @@ export default function Page() {
                         }
                       }}
                     >
-                      Use Demo CSV
+                      {uploadedFile ? "Demo CSV Locked" : "Use Demo CSV"}
                     </Button>
+                    {uploadedFile && (
+                      <p className="mt-2 text-xs text-slate-500">
+                        Manual upload detected. Demo CSV is disabled until you clear or replace the current file.
+                      </p>
+                    )}
                   </div>
                 </div>
 
@@ -878,13 +883,13 @@ export default function Page() {
                   <Button 
                     onClick={onRunAnalytics} 
                     disabled={!hasDataSource || !uploadConfirmed || !hasValidCsv || !hasCategory || !hasEnoughSeries || !keywordAligned || running || confirmingUpload}
-                    className="flex-1 h-11 text-base"
+                    className="flex-1 h-11 rounded-xl border border-slate-900 bg-slate-900 text-base font-medium text-white shadow-sm transition-all duration-200 hover:bg-slate-800 hover:shadow-md disabled:border-slate-300 disabled:bg-slate-300 disabled:text-slate-600"
                   >
                     {running ? "Running Analytics..." : "Run Analytics"}
                   </Button>
                   <Button 
                     variant="outline" 
-                    className="flex-1 h-11"
+                    className="flex-1 h-11 rounded-xl border-slate-300 bg-white font-medium text-slate-700 shadow-sm transition-all duration-200 hover:border-slate-400 hover:bg-slate-50"
                     onClick={() => {
                       setCsvName("");
                       setUploadedFile(null);
@@ -1052,9 +1057,9 @@ export default function Page() {
                     <div className="rounded-lg border border-slate-300/90 bg-white p-2 shadow-[0_0_0_1px_rgba(15,23,42,0.08)]">
                       <Plot
                         data={[
-                          { x: testDates, y: testActual, type: "scatter", mode: "lines+markers", name: "Actual", line: { color: "#1f77b4", width: 2.5 }, marker: { size: 5 } },
-                          { x: testDates, y: arimaPred, type: "scatter", mode: "lines+markers", name: "SARIMA(1,1,1)(1,1,0,52)", line: { color: "#d62728", width: 2, dash: "dot" }, marker: { size: 4 } },
-                          { x: testDates, y: xgbPred, type: "scatter", mode: "lines+markers", name: "XGBoost + Trends", line: { color: "#2ca02c", width: 2, dash: "dash" }, marker: { size: 4 } },
+                          { x: testDates, y: testActual, type: "scatter", mode: "lines+markers", name: "Actual", line: { color: "#0f172a", width: 3 }, marker: { size: 6, color: "#0f172a" } },
+                          { x: testDates, y: arimaPred, type: "scatter", mode: "lines+markers", name: "SARIMA(1,1,1)(1,1,0,52)", line: { color: "#ef4444", width: 2.5, dash: "dot" }, marker: { size: 6, color: "#ef4444", symbol: "square" }, opacity: 0.95 },
+                          { x: testDates, y: xgbPred, type: "scatter", mode: "lines+markers", name: "XGBoost + Trends", line: { color: "#16a34a", width: 2.5, dash: "dash" }, marker: { size: 6, color: "#16a34a", symbol: "diamond" }, opacity: 0.95 },
                         ]}
                         layout={{ title: "Test-Set Predictions - Actual vs SARIMA vs XGBoost", xaxis: { title: "Date" }, yaxis: { title: "Units Sold" }, height: 500, hovermode: "x unified", legend: { orientation: "h", y: -0.2 }, template: "plotly_white", margin: { l: 40, r: 20, t: 60, b: 60 } } as Partial<Layout>}
                         config={{ responsive: true, displayModeBar: false }}
